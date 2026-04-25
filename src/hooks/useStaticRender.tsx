@@ -47,6 +47,7 @@ export const useStaticRender = <P extends object>(
 ) => {
   const { hydrationDelay = 30, displayContents = true } = options;
 
+  // 1. Compute markup (cached by baseElement props)
   const prototypeMarkup = useMemo(() => {
     const props = baseElement.props;
     const propsWithChildren = props as Record<string, unknown>;
@@ -58,6 +59,7 @@ export const useStaticRender = <P extends object>(
     return renderToStaticMarkup(template);
   }, [baseElement]);
 
+  // 2. Bridge dynamic values to the stable component via Ref
   const stateRef = useRef({
     baseElement,
     prototypeMarkup,
@@ -74,6 +76,7 @@ export const useStaticRender = <P extends object>(
     };
   }, [baseElement, prototypeMarkup, hydrationDelay, displayContents]);
 
+  // 3. STABLE COMPONENT TYPE: This must NEVER change to preserve [isInteractive] state
   const StaticItem = useMemo(() => {
     const Item = ({ children, ...componentProps }: StaticItemProps<P>) => {
       const [isInteractive, setIsInteractive] = useState<boolean>(false);
@@ -87,17 +90,17 @@ export const useStaticRender = <P extends object>(
         };
       }, []);
 
-      // RGAA: Restore focus after hydration if it was triggered by keyboard
+      // RGAA: Restore focus after hydration
       useEffect(() => {
         if (isInteractive && needsFocus && wrapperRef.current) {
           const focusableChild = wrapperRef.current.querySelector(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
           ) as HTMLElement;
-          
+
           if (focusableChild) {
             focusableChild.focus();
           } else if (wrapperRef.current.firstElementChild) {
-             (wrapperRef.current.firstElementChild as HTMLElement).focus();
+            (wrapperRef.current.firstElementChild as HTMLElement).focus();
           }
           setNeedsFocus(false);
         }
@@ -105,31 +108,40 @@ export const useStaticRender = <P extends object>(
 
       const handleInteract = (
         e: React.MouseEvent<HTMLDivElement> | React.FocusEvent<HTMLDivElement>,
-        isFocus: boolean = false
+        isFocus: boolean = false,
       ) => {
+        // IMPORTANT: If already interactive or hydrating, do nothing
+        if (isInteractive || timerRef.current) return;
+
         const { hydrationDelay: currentDelay } = stateRef.current;
-        
-        // For keyboard focus, we want to hydrate immediately to avoid focus loss delays
         const delay = isFocus ? 0 : currentDelay;
 
         timerRef.current = setTimeout(() => {
           setIsInteractive(true);
           if (isFocus) setNeedsFocus(true);
         }, delay);
-        
+
         if (!isFocus) {
-          const props = componentProps as Partial<React.DOMAttributes<HTMLElement>>;
-          if (typeof props.onMouseEnter === 'function') {
+          const props = componentProps as Partial<
+            React.DOMAttributes<HTMLElement>
+          >;
+          if (typeof props.onMouseEnter === "function") {
             props.onMouseEnter(e as unknown as React.MouseEvent<HTMLElement>);
           }
         }
       };
 
-      const handleLeave = (e: React.MouseEvent<HTMLElement> | React.FocusEvent<HTMLElement>, isBlur: boolean = false) => {
+      const handleLeave = (
+        e: React.MouseEvent<HTMLElement> | React.FocusEvent<HTMLElement>,
+        isBlur: boolean = false,
+      ) => {
         // Only dehydrate on blur if focus actually left the wrapper (e.g., tabbing away)
         if (isBlur) {
           const focusEvent = e as React.FocusEvent<HTMLElement>;
-          if (wrapperRef.current && wrapperRef.current.contains(focusEvent.relatedTarget as Node)) {
+          if (
+            wrapperRef.current &&
+            wrapperRef.current.contains(focusEvent.relatedTarget as Node)
+          ) {
             return; // Focus just moved inside the wrapper
           }
         }
@@ -139,10 +151,12 @@ export const useStaticRender = <P extends object>(
           timerRef.current = null;
         }
         setIsInteractive(false);
-        
+
         if (!isBlur) {
-          const props = componentProps as Partial<React.DOMAttributes<HTMLElement>>;
-          if (typeof props.onMouseLeave === 'function') {
+          const props = componentProps as Partial<
+            React.DOMAttributes<HTMLElement>
+          >;
+          if (typeof props.onMouseLeave === "function") {
             props.onMouseLeave(e as unknown as React.MouseEvent<HTMLElement>);
           }
         }
