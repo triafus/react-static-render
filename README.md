@@ -1,4 +1,4 @@
-# react-lowrender ⚡️
+# react-static-render ⚡️
 
 An ultra-lightweight React library that optimizes performance by rendering complex components as static HTML and only hydrating them into interactive React components on hover. 
 
@@ -7,11 +7,11 @@ Ideal for heavy lists, data grids, or dashboards where rendering hundreds of int
 ## Installation
 
 ```bash
-npm install react-lowrender
+npm install react-static-render
 # or
-pnpm add react-lowrender
+pnpm add react-static-render
 # or
-yarn add react-lowrender
+yarn add react-static-render
 ```
 
 ## Features
@@ -27,7 +27,7 @@ Here is a basic example of how to use the `useStaticRender` hook.
 
 ```tsx
 import React from 'react';
-import { useStaticRender } from 'react-lowrender';
+import { useStaticRender } from 'react-static-render';
 import HeavyComponent from './HeavyComponent';
 
 export default function MyList() {
