@@ -9,6 +9,22 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const SLOT_MARKER = "___SLOT_MARKER___";
 
+/**
+ * Simple shallow equality check for props
+ */
+function propsEqual(a: any, b: any) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+
 export interface StaticRenderOptions {
   /**
    * The delay (in milliseconds) before hydration (replacement with the interactive component) on hover.
@@ -47,7 +63,19 @@ export const useStaticRender = <P extends object>(
 ) => {
   const { hydrationDelay = 30, displayContents = true } = options;
 
+  // Stability: We cache the markup by comparing baseElement props
+  const lastBaseRef = useRef(baseElement);
+  const lastMarkupRef = useRef("");
+
   const prototypeMarkup = useMemo(() => {
+    if (
+      lastMarkupRef.current &&
+      baseElement.type === lastBaseRef.current.type &&
+      propsEqual(baseElement.props, lastBaseRef.current.props)
+    ) {
+      return lastMarkupRef.current;
+    }
+
     const props = baseElement.props;
     const propsWithChildren = props as Record<string, unknown>;
     const template = React.cloneElement(
@@ -55,13 +83,41 @@ export const useStaticRender = <P extends object>(
       props,
       (propsWithChildren.children as React.ReactNode) || SLOT_MARKER,
     );
-    return renderToStaticMarkup(template);
+    
+    const markup = renderToStaticMarkup(template);
+    lastBaseRef.current = baseElement;
+    lastMarkupRef.current = markup;
+    return markup;
   }, [baseElement]);
 
+  const stateRef = useRef({
+    baseElement,
+    prototypeMarkup,
+    hydrationDelay,
+    displayContents,
+  });
+
+  useEffect(() => {
+    stateRef.current = {
+      baseElement,
+      prototypeMarkup,
+      hydrationDelay,
+      displayContents,
+    };
+  }, [baseElement, prototypeMarkup, hydrationDelay, displayContents]);
+
   const StaticItem = useMemo(() => {
-    return ({ children, ...componentProps }: StaticItemProps<P>) => {
+    const Item = ({ children, ...componentProps }: StaticItemProps<P>) => {
       const [isInteractive, setIsInteractive] = useState<boolean>(false);
+      const [needsFocus, setNeedsFocus] = useState<boolean>(false);
       const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+      const wrapperRef = useRef<HTMLDivElement>(null);
+      
+      // Keep track of stable props to prevent interactive re-renders
+      const lastProps = useRef(componentProps);
+      if (!propsEqual(lastProps.current, componentProps)) {
+        lastProps.current = componentProps;
+      }
 
       useEffect(() => {
         return () => {
@@ -69,54 +125,123 @@ export const useStaticRender = <P extends object>(
         };
       }, []);
 
-      const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
+      // RGAA: Restore focus after hydration if it was triggered by keyboard
+      useEffect(() => {
+        if (isInteractive && needsFocus && wrapperRef.current) {
+          const focusableChild = wrapperRef.current.querySelector(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ) as HTMLElement;
+
+          if (focusableChild) {
+            focusableChild.focus();
+          } else if (wrapperRef.current.firstElementChild) {
+            (wrapperRef.current.firstElementChild as HTMLElement).focus();
+          }
+          setNeedsFocus(false);
+        }
+      }, [isInteractive, needsFocus]);
+
+      const handleInteract = (
+        e: React.MouseEvent<HTMLDivElement> | React.FocusEvent<HTMLDivElement>,
+        isFocus: boolean = false,
+      ) => {
+        if (isInteractive || timerRef.current) return;
+
+        const { hydrationDelay: currentDelay } = stateRef.current;
+        const delay = isFocus ? 0 : currentDelay;
+
         timerRef.current = setTimeout(() => {
           setIsInteractive(true);
-        }, hydrationDelay);
-        
-        const props = componentProps as Partial<React.DOMAttributes<HTMLElement>>;
-        if (typeof props.onMouseEnter === 'function') {
-          props.onMouseEnter(e as unknown as React.MouseEvent<HTMLElement>);
+          if (isFocus) setNeedsFocus(true);
+        }, delay);
+
+        if (!isFocus) {
+          const props = componentProps as Partial<
+            React.DOMAttributes<HTMLElement>
+          >;
+          if (typeof props.onMouseEnter === "function") {
+            props.onMouseEnter(e as unknown as React.MouseEvent<HTMLElement>);
+          }
         }
       };
 
-      const handleMouseLeave = (e: React.MouseEvent<HTMLElement>) => {
+      const handleLeave = (
+        e: React.MouseEvent<HTMLElement> | React.FocusEvent<HTMLElement>,
+        isBlur: boolean = false,
+      ) => {
+        // Only dehydrate on blur if focus actually left the wrapper (e.g., tabbing away)
+        if (isBlur) {
+          const focusEvent = e as React.FocusEvent<HTMLElement>;
+          if (
+            wrapperRef.current &&
+            wrapperRef.current.contains(focusEvent.relatedTarget as Node)
+          ) {
+            return; // Focus just moved inside the wrapper
+          }
+        }
+
         if (timerRef.current) {
           clearTimeout(timerRef.current);
           timerRef.current = null;
         }
         setIsInteractive(false);
-        
-        const props = componentProps as Partial<React.DOMAttributes<HTMLElement>>;
-        if (typeof props.onMouseLeave === 'function') {
-          props.onMouseLeave(e);
+
+        if (!isBlur) {
+          const props = componentProps as Partial<
+            React.DOMAttributes<HTMLElement>
+          >;
+          if (typeof props.onMouseLeave === "function") {
+            props.onMouseLeave(e as unknown as React.MouseEvent<HTMLElement>);
+          }
         }
       };
 
+      const {
+        prototypeMarkup: currentMarkup,
+        displayContents: currentDisplay,
+        baseElement: currentBase,
+      } = stateRef.current;
+
+      const wrapperStyle = { display: currentDisplay ? "contents" : undefined };
+
       if (isInteractive) {
-        return React.cloneElement(
-          baseElement,
-          {
-            ...baseElement.props,
-            ...componentProps,
-            onMouseLeave: handleMouseLeave,
-          },
-          children,
+        return (
+          <div
+            ref={wrapperRef}
+            style={wrapperStyle}
+            onMouseLeave={(e) => handleLeave(e, false)}
+            onBlur={(e) => handleLeave(e, true)}
+          >
+            {React.cloneElement(
+              currentBase,
+              {
+                ...currentBase.props,
+                ...componentProps,
+              },
+              children,
+            )}
+          </div>
         );
       }
 
       return (
         <div
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-          style={{ display: displayContents ? "contents" : undefined }}
+          ref={wrapperRef}
+          onMouseEnter={(e) => handleInteract(e, false)}
+          onMouseLeave={(e) => handleLeave(e, false)}
+          onFocus={(e) => handleInteract(e, true)}
+          onBlur={(e) => handleLeave(e, true)}
+          style={wrapperStyle}
           dangerouslySetInnerHTML={{
-            __html: prototypeMarkup.replace(SLOT_MARKER, children),
+            __html: currentMarkup.replace(SLOT_MARKER, children),
           }}
         />
       );
     };
-  }, [prototypeMarkup, baseElement, hydrationDelay, displayContents]);
+
+    Item.displayName = "StaticItem";
+    return Item;
+  }, []);
 
   return { StaticItem };
 };
